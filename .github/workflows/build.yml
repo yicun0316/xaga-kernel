@@ -35,14 +35,25 @@ jobs:
           sudo apt-get clean
           df -h /
 
+      # 内核 5.10 与 clang 14/15 不兼容（GKI 5.10 当年用的是 AOSP clang-r416183b ≈ clang 12），
+      # 所以这里明确装 clang-12 + lld-12，不要用系统默认 clang。
       - name: 安装依赖
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev \
             zip unzip rsync python3 device-tree-compiler lz4 xz-utils zstd cpio kmod \
             git curl binutils pahole \
-            clang lld llvm gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
-          clang --version | head -1
+            clang-12 lld-12 llvm-12 gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          echo "== clang =="
+          clang-12 --version | head -2
+          echo "== 交叉编译器 =="
+          aarch64-linux-gnu-gcc --version | head -1
+
+      - name: 编译器冒烟测试
+        run: |
+          printf 'int x;\n' > /tmp/t.c
+          clang-12 --target=aarch64-linux-gnu -c /tmp/t.c -o /tmp/t.o
+          echo "clang-12 能正常编译 aarch64 目标"
 
       - name: 拉取内核源码
         run: |
@@ -86,13 +97,22 @@ jobs:
         if: ${{ inputs.apply_bbr3 }}
         run: bash scripts/patch-bbrv3.sh kernel
 
-      # 这个 fork 里没有 build/ 子模块（build.sh 属于 kernel/build 仓库），
+      # 这个 fork 里没有 build/ 子模块（build.sh 在 kernel/build 仓库里），
       # 所以不走 build/build.sh，直接用 make。
       - name: 编译
         run: |
+          set -o pipefail
           cd kernel
+
           export ARCH=arm64
-          export LLVM=1 LLVM_IAS=1
+          export CC=clang-12
+          export LD=ld.lld-12
+          export AR=llvm-ar-12
+          export NM=llvm-nm-12
+          export OBJCOPY=llvm-objcopy-12
+          export OBJDUMP=llvm-objdump-12
+          export STRIP=llvm-strip-12
+          export LLVM_IAS=1
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CLANG_TRIPLE=aarch64-linux-gnu-
 
@@ -100,11 +120,18 @@ jobs:
 
           # 关掉 KMI 符号裁剪：TRIM_UNUSED_KSYMS 需要 build/abi 脚本生成白名单，
           # 没有 build.sh 时开着会裁掉 vendor 依赖的导出符号，导致 vendor_dlkm 的 .ko 加载失败。
-          # 同时关掉 git 版本后缀，避免深克隆缺失导致的版本号异常。
+          # LOCALVERSION_AUTO 关掉，避免浅克隆导致版本号异常。
           ./scripts/config --file out/.config -d TRIM_UNUSED_KSYMS -d LOCALVERSION_AUTO
           make O=out olddefconfig
 
-          make O=out -j"$(nproc)" Image
+          if ! make O=out -j"$(nproc)" Image 2>&1 | tee /tmp/build.log; then
+            echo "::error::编译失败，下面是日志里的错误行"
+            grep -n -m 20 -E 'error:|Error [0-9]|fatal error' /tmp/build.log || true
+            echo "---- 日志末尾 ----"
+            tail -40 /tmp/build.log
+            exit 1
+          fi
+
           ls -lh out/arch/arm64/boot/Image
 
       - name: 打包 AnyKernel3
