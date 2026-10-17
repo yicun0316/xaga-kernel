@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
-# 把编译产物 Image 打包成 AnyKernel3 可刷入 zip
-# 用法: package-ak3.sh <kernel_dir> [tag]
-# 产物: ./out/ak3-<version>-<tag>.zip
+# 把编译产物 Image 打包成可刷入的 AnyKernel3 zip
+#   用法: package-ak3.sh <kernel_dir> [tag]
+#   产物: ./out/ak3-<version>-<tag>.zip
+#
+# 说明: AK3 v3 的 anykernel.sh 用 BLOCK= / IS_SLOT_DEVICE= 变量，
+#       不再用旧版的 block=boot 属性。这里直接生成整份脚本，不 sed 模板。
 # =============================================================================
 set -euo pipefail
 
@@ -10,12 +13,14 @@ K=${1:?用法: package-ak3.sh <kernel_dir> [tag]}
 TAG=${2:-build}
 ROOT=$PWD
 
-IMG=$(ls "$K"/out/*/dist/Image 2>/dev/null | head -1)
+# 兼容两种产物路径：build.sh 的 out/*/dist/Image，和手工 make 的 out/arch/arm64/boot/Image
+IMG=$(ls "$K"/out/*/dist/Image "$K"/out/arch/arm64/boot/Image 2>/dev/null | head -1)
 [ -n "${IMG:-}" ] && [ -f "$IMG" ] || { echo "找不到 Image"; exit 1; }
 echo ">> Image: $IMG ($(du -h "$IMG" | cut -f1))"
 
 work=$(mktemp -d)
 cd "$work"
+echo ">> 下载 AnyKernel3 模板"
 curl -fsSL -o ak3.zip https://github.com/osm0sis/AnyKernel3/archive/refs/heads/master.zip
 unzip -q ak3.zip
 d=$(find . -maxdepth 1 -type d -name 'AnyKernel3-*' | head -1)
@@ -23,12 +28,43 @@ d=$(find . -maxdepth 1 -type d -name 'AnyKernel3-*' | head -1)
 
 cp "$IMG" "$d/Image"
 
-sed -i 's|^kernel.string=.*|kernel.string=GKI 5.10 by ztc1997 (CI optimized)|' "$d/anykernel.sh"
-sed -i 's|^do.devicecheck=.*|do.devicecheck=0|' "$d/anykernel.sh"
-sed -i 's|^do.modules=.*|do.modules=0|' "$d/anykernel.sh"
-sed -i 's|^do.systemless=.*|do.systemless=1|' "$d/anykernel.sh"
-grep -q '^block=' "$d/anykernel.sh" || echo 'block=boot;' >> "$d/anykernel.sh"
-grep -q '^is_slot_device=' "$d/anykernel.sh" || echo 'is_slot_device=1;' >> "$d/anykernel.sh"
+# ---- 生成 anykernel.sh（v3 格式） ----
+cat > "$d/anykernel.sh" <<'AK3EOF'
+### AnyKernel3 Ramdisk Mod Script
+## 由 CI 生成 — GKI 5.10 kernel-only 替换
+
+properties() { '
+kernel.string=GKI 5.10 by ztc1997 (CI optimized)
+do.devicecheck=0
+do.modules=0
+do.systemless=1
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=
+'; }
+
+# ---- 分区识别 ----
+# 槽位: auto = 从 ro.boot.slot_suffix / /proc/cmdline 自动取 _a/_b
+#       A/B 机器上 BLOCK=boot + SLOT=_a 会解析成 /dev/block/by-name/boot_a
+# 分区: 默认 boot；只有 boot 完全不存在（A13+ 新布局）才退到 init_boot
+#       注意用通配符判断：A/B 机器没有不带后缀的 boot 节点
+BLOCK=boot;
+IS_SLOT_DEVICE=auto;
+has_part() {
+  ls /dev/block/by-name/$1* /dev/block/bootdevice/by-name/$1* >/dev/null 2>&1;
+}
+if ! has_part boot && has_part init_boot; then
+  BLOCK=init_boot;
+fi
+RAMDISK_COMPRESSION=auto;
+PATCH_VBMETA_FLAG=auto;
+
+. tools/ak3-core.sh;
+
+# GKI 只换 kernel，不碰 ramdisk：split 出 boot.img 后只写回 kernel
+split_boot;
+flash_boot;
+AK3EOF
 
 ver=$(strings "$IMG" | grep -m1 '^Linux version ' | awk '{print $3}' || echo unknown)
 mkdir -p "$ROOT/out"
