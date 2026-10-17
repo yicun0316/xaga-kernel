@@ -1,0 +1,102 @@
+name: build-kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "内核分支（如 android12-5.10-2025-12）"
+        required: true
+        default: "android12-5.10-2025-12"
+      apply_mglru:
+        description: "应用 patches/mglru/*.patch（MGLRU 补丁，需先在本地解决冲突）"
+        type: boolean
+        default: false
+      apply_bbr3:
+        description: "替换为 BBRv3（面向 6.x，可能编不过，默认关）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 330
+
+    steps:
+      - name: 检出本仓库
+        uses: actions/checkout@v4
+
+      - name: 腾出磁盘（内核编译约需 25GB）
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" 2>/dev/null || true
+          sudo apt-get clean
+          df -h /
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev \
+            zip unzip rsync python3 device-tree-compiler lz4 xz-utils zstd cpio kmod \
+            git curl binutils
+
+      - name: 拉取内核源码
+        run: |
+          git clone --depth=1 -b "${{ inputs.branch }}" \
+            https://github.com/ztc1997/android_gki_kernel_5.10_common.git kernel
+          cd kernel && git log -1 --format='%h %s'
+
+      - name: 应用 MGLRU 补丁
+        if: ${{ inputs.apply_mglru }}
+        run: |
+          shopt -s nullglob
+          ps=("$GITHUB_WORKSPACE"/patches/mglru/*.patch)
+          if [ ${#ps[@]} -eq 0 ]; then
+            echo "::error::patches/mglru 里没有补丁"
+            exit 1
+          fi
+          cd kernel
+          for p in "${ps[@]}"; do
+            echo ">> 应用 $(basename "$p")"
+            git am --3way "$p" || { echo "::error::补丁失败 $(basename "$p")"; exit 1; }
+          done
+
+      - name: 产前检查（确认原有功能仍在，绝不删功能）
+        run: |
+          cd kernel
+          echo "== kcompressd =="
+          grep -rn "kcompressd" mm/vmscan.c drivers/block/zram/ 2>/dev/null | head -5 || echo "  未找到（该分支可能早于 2025-10）"
+          echo "== zstd =="
+          ls crypto/zstd.c lib/zstd/ >/dev/null 2>&1 && echo "  有" || echo "  无"
+          echo "== teo / ssg / schedhorizon =="
+          ls drivers/cpuidle/governors/teo.c 2>/dev/null
+          grep -rln "ssg" block/ drivers/block/ 2>/dev/null | head -3
+          grep -rln "schedhorizon" kernel/sched/ 2>/dev/null | head -3
+
+      - name: 修改内核配置（只动 12 个符号，不删功能）
+        run: bash scripts/patch-config.sh kernel
+
+      - name: BBRv3 替换
+        if: ${{ inputs.apply_bbr3 }}
+        run: bash scripts/patch-bbrv3.sh kernel
+
+      - name: 编译
+        run: |
+          cd kernel
+          BUILD_CONFIG=build.config.gki.aarch64 build/build.sh -j"$(nproc)"
+
+      - name: 打包 AnyKernel3
+        run: bash scripts/package-ak3.sh kernel "${{ inputs.branch }}"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ inputs.branch }}
+          path: |
+            out/*.zip
+            out/*.sha256
+            kernel/out/*/dist/Image
+            kernel/out/*/dist/System.map
+          if-no-files-found: error
