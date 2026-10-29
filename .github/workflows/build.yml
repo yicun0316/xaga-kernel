@@ -177,6 +177,7 @@ jobs:
         run: bash scripts/package-ak3.sh kernel "${{ inputs.branch }}"
 
       - name: 上传产物
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: kernel-${{ inputs.branch }}
@@ -185,4 +186,4 @@ jobs:
             out/*.sha256
             kernel/out/arch/arm64/boot/Image
             kernel/out/System.map
-          if-no-files-found: error
+          if-no-files-found: warn

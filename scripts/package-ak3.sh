@@ -21,6 +21,8 @@ for p in "$K"/out/*/dist/Image "$K"/out/arch/arm64/boot/Image; do
   if [ -f "$p" ]; then IMG=$p; break; fi
 done
 [ -n "$IMG" ] || { echo "找不到 Image（已找过 out/*/dist/Image 与 out/arch/arm64/boot/Image）"; exit 1; }
+# 必须转成绝对路径：后面会 cd 进临时目录，相对路径会失效（cp: cannot stat）。
+IMG=$(readlink -f "$IMG")
 echo ">> Image: $IMG ($(du -h "$IMG" | cut -f1))"
 
 work=$(mktemp -d)
