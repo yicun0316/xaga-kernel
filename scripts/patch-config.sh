@@ -24,6 +24,11 @@ for s in CONFIG_KASAN CONFIG_KASAN_HW_TAGS CONFIG_PAGE_OWNER \
   off "$s"
 done
 
+# Ubuntu 的 clang 不带 libPolly。CONFIG_LLVM_POLLY=y 时 Makefile 会追加
+# 一整组 -mllvm -polly-*，而 LLVM option parsing 遇到不认识的参数是硬失败
+# （不像 cc-option 那样能跳过）。关掉它，由 Makefile 的 ifdef 自然跳过。
+off CONFIG_LLVM_POLLY
+
 echo ">> 2) 以下选项刻意保持上游默认，不再改动"
 cat <<'NOTE'
      CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y   vendor 驱动依赖 kmalloc 清零语义

@@ -114,6 +114,15 @@ jobs:
           MK="$MK OBJCOPY=llvm-objcopy-12 OBJDUMP=llvm-objdump-12 STRIP=llvm-strip-12"
           MK="$MK LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-"
 
+          # Ubuntu 版 clang 不支持 AOSP 分支里这两条 MLGO 专属选项，且 Makefile 里
+          # 没有配置开关，只能直接删。它们只影响 LTO 的寄存器分配策略和冷热分离，
+          # 属于体积/性能调优，去掉不影响正确性。
+          #   clang (LLVM option parsing): Unknown command line argument
+          #   '-regalloc-enable-advisor=release'
+          sed -i '/-mllvm -regalloc-enable-advisor=release/d; /-mllvm -hot-cold-split/d' Makefile
+          echo ">> 已移除 MLGO / hot-cold-split（Ubuntu clang 不支持）"
+          grep -nE "regalloc-enable-advisor|hot-cold-split" Makefile || echo "   MLGO / hot-cold 已清理（Polly 行保留但 CONFIG_LLVM_POLLY 已关）"
+
           make O=out $MK gki_defconfig
 
           # 关掉 KMI 符号裁剪：TRIM_UNUSED_KSYMS 需要 build/abi 脚本生成白名单，
