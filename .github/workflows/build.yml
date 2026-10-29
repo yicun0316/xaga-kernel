@@ -121,6 +121,13 @@ jobs:
           #   '-regalloc-enable-advisor=release'
           sed -i '/-mllvm -regalloc-enable-advisor=release/d; /-mllvm -hot-cold-split/d' Makefile
           echo ">> 已移除 MLGO / hot-cold-split（Ubuntu clang 不支持）"
+
+          # patch-config.sh 改过 gki_defconfig、上面又改了 Makefile，工作区是脏的。
+          # scripts/setlocalversion 看到未提交改动的任何文件就会给版本号加 "+"，
+          # 得到 5.10.246-ztc1997+ 这种非预期版本串。提交掉，保持工作区干净。
+          git -c user.name="ci" -c user.email="ci@localhost" \
+              commit -q -am "ci: strip mlgo options and trim debug config" --no-verify || true
+          git status --porcelain || true
           grep -nE "regalloc-enable-advisor|hot-cold-split" Makefile || echo "   MLGO / hot-cold 已清理（Polly 行保留但 CONFIG_LLVM_POLLY 已关）"
 
           make O=out $MK gki_defconfig

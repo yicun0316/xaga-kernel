@@ -14,8 +14,13 @@ TAG=${2:-build}
 ROOT=$PWD
 
 # 兼容两种产物路径：build.sh 的 out/*/dist/Image，和手工 make 的 out/arch/arm64/boot/Image
-IMG=$(ls "$K"/out/*/dist/Image "$K"/out/arch/arm64/boot/Image 2>/dev/null | head -1)
-[ -n "${IMG:-}" ] && [ -f "$IMG" ] || { echo "找不到 Image"; exit 1; }
+# 注意：不要用 `ls ... | head`。glob 不匹配时 ls 返回 2，配合 pipefail 会让赋值语句失败，
+# 加上 set -e 就直接退出，而 stderr 已被丢弃，日志里只会看到 "exit code 2" 一片空白。
+IMG=""
+for p in "$K"/out/*/dist/Image "$K"/out/arch/arm64/boot/Image; do
+  if [ -f "$p" ]; then IMG=$p; break; fi
+done
+[ -n "$IMG" ] || { echo "找不到 Image（已找过 out/*/dist/Image 与 out/arch/arm64/boot/Image）"; exit 1; }
 echo ">> Image: $IMG ($(du -h "$IMG" | cut -f1))"
 
 work=$(mktemp -d)
