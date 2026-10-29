@@ -104,27 +104,29 @@ jobs:
           set -o pipefail
           cd kernel
 
-          export ARCH=arm64
-          export CC=clang-12
-          export LD=ld.lld-12
-          export AR=llvm-ar-12
-          export NM=llvm-nm-12
-          export OBJCOPY=llvm-objcopy-12
-          export OBJDUMP=llvm-objdump-12
-          export STRIP=llvm-strip-12
-          export LLVM_IAS=1
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CLANG_TRIPLE=aarch64-linux-gnu-
+          # 关键：这些必须作为 make 的「命令行变量」传，不能 export。
+          # 内核顶层 Makefile 用的是 `CC = $(CROSS_COMPILE)gcc` 这种无条件赋值，
+          # 会盖掉同名环境变量，导致实际仍然调用 aarch64-linux-gnu-gcc，
+          # 进而报 "unrecognized command-line option '-mllvm'"。
+          # 命令行变量优先级最高，能真正生效。
+          MK="ARCH=arm64"
+          MK="$MK CC=clang-12 LD=ld.lld-12 AR=llvm-ar-12 NM=llvm-nm-12"
+          MK="$MK OBJCOPY=llvm-objcopy-12 OBJDUMP=llvm-objdump-12 STRIP=llvm-strip-12"
+          MK="$MK LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-"
 
-          make O=out gki_defconfig
+          make O=out $MK gki_defconfig
 
           # 关掉 KMI 符号裁剪：TRIM_UNUSED_KSYMS 需要 build/abi 脚本生成白名单，
           # 没有 build.sh 时开着会裁掉 vendor 依赖的导出符号，导致 vendor_dlkm 的 .ko 加载失败。
           # LOCALVERSION_AUTO 关掉，避免浅克隆导致版本号异常。
           ./scripts/config --file out/.config -d TRIM_UNUSED_KSYMS -d LOCALVERSION_AUTO
-          make O=out olddefconfig
+          make O=out $MK olddefconfig
 
-          if ! make O=out -j"$(nproc)" Image 2>&1 | tee /tmp/build.log; then
+          echo "=== 编译器与版本确认（CONFIG_CC_IS_CLANG 必须是 y）==="
+          grep -E '^(CONFIG_CC_IS_CLANG|CONFIG_CC_VERSION_TEXT|CONFIG_LOCALVERSION)=' out/.config || true
+          make -s O=out $MK kernelrelease 2>/dev/null | tail -1 || true
+
+          if ! make O=out $MK -j"$(nproc)" Image 2>&1 | tee /tmp/build.log; then
             echo "::error::编译失败，下面是日志里的错误行"
             grep -n -m 20 -E 'error:|Error [0-9]|fatal error' /tmp/build.log || true
             echo "---- 日志末尾 ----"
