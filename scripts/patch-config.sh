@@ -2,6 +2,9 @@
 # =============================================================================
 # 在 CI 中对 gki_defconfig 做批量修改（幂等，重复跑结果一致）
 # 用法: patch-config.sh <kernel_dir>
+#
+# 原则：只做「体积裁剪」，不做「行为修改」。
+#       任何会影响 ABI、struct 布局、或驱动隐含假设的选项，一律保持上游默认。
 # =============================================================================
 set -euo pipefail
 
@@ -12,36 +15,45 @@ DEF="$K/arch/arm64/configs/gki_defconfig"
 # 先清掉同名的旧行，避免重复
 strip() { sed -i "/^$1=/d; /^# $1 is not set/d" "$DEF"; }
 off()   { strip "$1"; printf '# %s is not set\n' "$1" >> "$DEF"; }
-on()    { strip "$1"; printf '%s=y\n' "$1" >> "$DEF"; }
-str()   { strip "$1"; printf '%s="%s"\n' "$1" "$2" >> "$DEF"; }
 
-echo ">> 1) 去掉调试脚手架"
+echo ">> 1) 关掉纯调试脚手架（不改变运行时行为）"
+# KASAN 虽然编进去了，但 CMDLINE 里已有 kasan=off，运行时本就是关的，
+# 关掉它只省 Image 体积和一点内联开销。
 for s in CONFIG_KASAN CONFIG_KASAN_HW_TAGS CONFIG_PAGE_OWNER \
-         CONFIG_DEBUG_INFO CONFIG_DEBUG_INFO_DWARF4 \
-         CONFIG_INIT_ON_ALLOC_DEFAULT_ON CONFIG_KALLSYMS_ALL \
-         CONFIG_SCHED_DEBUG CONFIG_SCHEDSTATS; do
+         CONFIG_DEBUG_INFO CONFIG_DEBUG_INFO_DWARF4; do
   off "$s"
 done
 
-echo ">> 2) PELT 半衰期 16ms -> 12ms"
-strip CONFIG_PELT_UTIL_HALFLIFE_16
-strip CONFIG_PELT_UTIL_HALFLIFE_32
-strip CONFIG_PELT_UTIL_HALFLIFE_DEFAULT
-on CONFIG_PELT_UTIL_HALFLIFE_12
+echo ">> 2) 以下选项刻意保持上游默认，不再改动"
+cat <<'NOTE'
+     CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y   vendor 驱动依赖 kmalloc 清零语义
+     CONFIG_KALLSYMS_ALL=y               oops backtrace 需要函数名，否则全是地址
+     CONFIG_SCHEDSTATS=y                 影响 task_struct 布局，动了会波及 vendor 模块
+     CONFIG_PELT_UTIL_HALFLIFE_16=y      改半衰期等于改调度器行为
+     CONFIG_DEFAULT_TCP_CONG             不设 bbr，保持原样
+     CONFIG_LOCALVERSION="-ztc1997"       必须与原包一致
+NOTE
 
-echo ">> 3) BBR"
-on CONFIG_TCP_CONG_ADVANCED
-on CONFIG_TCP_CONG_BBR
-str CONFIG_DEFAULT_TCP_CONG bbr
+echo ">> 3) 校验：下面这些必须是原值"
+for s in CONFIG_INIT_ON_ALLOC_DEFAULT_ON CONFIG_KALLSYMS_ALL CONFIG_SCHEDSTATS \
+         CONFIG_PELT_UTIL_HALFLIFE_16 CONFIG_LOCALVERSION CONFIG_MODVERSIONS; do
+  line=$(grep -m1 "^$s=" "$DEF" || true)
+  if [ -n "$line" ]; then
+    printf '  OK   %s\n' "$line"
+  else
+    printf '  !!   缺少 %s（上游默认应有，请检查）\n' "$s"
+  fi
+done
 
 echo ">> 4) MGLRU（仅在源码已含补丁时启用）"
 if grep -q '^config LRU_GEN' "$K/mm/Kconfig" 2>/dev/null; then
-  on CONFIG_LRU_GEN
-  on CONFIG_LRU_GEN_ENABLED
-  echo "   MGLRU 配置已写入"
+  strip CONFIG_LRU_GEN
+  strip CONFIG_LRU_GEN_ENABLED
+  printf 'CONFIG_LRU_GEN=y\nCONFIG_LRU_GEN_ENABLED=y\n' >> "$DEF"
+  echo "   mm/Kconfig 有 LRU_GEN，配置已写入"
 else
-  echo "   mm/Kconfig 中无 LRU_GEN —— 原树没有 MGLRU 代码，跳过"
+  echo "   mm/Kconfig 中无 LRU_GEN —— 源码没有 MGLRU 代码，本次不启用（这是预期结果）"
 fi
 
 echo ">> 结果:"
-grep -E 'KASAN|PAGE_OWNER|DEBUG_INFO=|INIT_ON_ALLOC|KALLSYMS_ALL|SCHED_DEBUG|SCHEDSTATS|PELT_UTIL|TCP_CONG|LRU_GEN' "$DEF" || true
+grep -E 'KASAN|PAGE_OWNER|DEBUG_INFO=|INIT_ON_ALLOC|KALLSYMS_ALL|SCHEDSTATS|PELT_UTIL|TCP_CONG|LOCALVERSION|LRU_GEN' "$DEF" || true

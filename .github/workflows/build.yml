@@ -134,6 +134,27 @@ jobs:
 
           ls -lh out/arch/arm64/boot/Image
 
+      - name: 产物自检
+        run: |
+          cd kernel
+          echo "== Image 大小 =="
+          ls -lh out/arch/arm64/boot/Image
+          echo "== 内核版本串 =="
+          strings out/arch/arm64/boot/Image | grep -m2 '^Linux version' || true
+          echo "== 是否含 KernelSU（应为空）=="
+          if strings out/arch/arm64/boot/Image | grep -qiE 'kernelsu|ksu_handle'; then
+            echo "::warning::镜像里检测到 KernelSU 符号"
+            strings out/arch/arm64/boot/Image | grep -iE 'kernelsu|ksu_handle' | head -3
+          else
+            echo "  无 KSU 符号"
+          fi
+          echo "== MGLRU 状态 =="
+          grep -c '^CONFIG_LRU_GEN=y' out/.config || echo "  MGLRU 未启用"
+          echo "== zram 可用压缩算法 =="
+          grep -E '^CONFIG_CRYPTO_(LZ4|LZ4HC|ZSTD|LZO)' out/.config || true
+          echo "== 关键项回显 =="
+          grep -E 'INIT_ON_ALLOC|KALLSYMS_ALL|SCHEDSTATS|PELT_UTIL|LOCALVERSION' out/.config || true
+
       - name: 打包 AnyKernel3
         run: bash scripts/package-ak3.sh kernel "${{ inputs.branch }}"
 
